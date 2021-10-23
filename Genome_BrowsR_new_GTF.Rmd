@@ -1,0 +1,162 @@
+---
+title: "Genome BrowsR"
+---
+Setting the working directory as the location of the script
+```{r include = FALSE}
+library(rstudioapi)
+rstudioapi::getActiveDocumentContext
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+Activate necessary packages
+```{r include = FALSE}
+library(ggplot2) #plotting
+library(tidyverse) #data wrangling
+library(GenomicAlignments) #reading bam files
+library(cowplot) #to assemble final plot
+library(scales) #changing scales
+```
+
+Read files
+```{r}
+### gtf file
+gtf <- rtracklayer::import("data/Arabidopsis_thaliana.TAIR10.44.gff3")
+gtf_df = as.data.frame(gtf)
+
+### input file should be count file made from bam alignment using bedtools genomecov
+input <- read.table("data/minp_deetiolated.txt")
+input_df = as.data.frame(input)
+
+### ip file should be count file made from bam alignment using bedtools genomecov
+ip <- read.table("data/ip_deetiolated.txt")
+ip_df = as.data.frame(ip)
+
+### peak file called by exomePeak in bed format
+peak <- read.table("data/peak.bed", header = FALSE, sep = "\t", stringsAsFactors = FALSE, quote = "") #load peak file
+peak$V1 <- gsub("chr", "", peak$V1) #remove "chr" from dataframe
+```
+
+Plot gene model
+```{r}
+#define gene of interest
+gene_of_interest <- "AT2G42500"
+
+gene_of_interest_wildcard <- df
+paste("*", gene_of_interest,"*", sep = "")
+
+gene <- gtf_df %>% filter(gene_id == gene_of_interest) 
+
+### 5'UTR
+five_UTR <- filter(gtf_df, grepl(paste("*", gene_of_interest,"*", sep = "") ,Parent)) 
+five_UTR <- filter(five_UTR, grepl(("five_prime_UTR") , type))
+
+### exons
+exon <- filter(gtf_df, grepl(paste("*", gene_of_interest,"*", sep = "") ,Parent)) 
+exon <- filter(exon, grepl(("exon") , type))
+
+### 3'UTR
+three_UTR <- filter(gtf_df, grepl(paste("*", gene_of_interest,"*", sep = "") ,Parent)) 
+three_UTR <- filter(three_UTR, grepl(("three_prime_UTR") , type))
+
+xmin_exon <- exon$start
+xmax_exon <- exon$end
+ymin_exon <- 0.9 #defines height of exon boxes
+ymax_exon <- 1.1 #defines height of exon boxes
+fill <- "darkorange" #defines color of exon boxes
+fill_intron <- "orange"
+
+gene_model <- ggplot() +
+  xlim(five_UTR$start - 200, three_UTR$end + 200) +
+  ylim (0.8, 1.2) +
+  geom_hline(yintercept = 1) +
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        #axis.text.y = element_blank(),
+        axis.text.y = element_text(color = "white", size = 12),
+        panel.background = element_blank(),
+        axis.line.y.left = element_line(),
+        legend.position = "none",
+        axis.title.x.bottom = element_blank(),
+        axis.text.x.bottom = element_text(size = 12, color = "black")
+        ) +
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) #change this if alignment on left side of plots is off
+
+
+### peaks
+peak <- peak %>% filter(V4 == gene$gene_id)
+xmin_peak <- peak$V2
+xmax_peak <- peak$V3
+ymin_peak <- 1.2 #defines height of exon boxes
+ymax_peak <- 1.4 #defines height of exon boxes
+fill_peak <- "black" #defines color of exon boxes
+
+
+
+### drawing the plot
+gene_model <- gene_model +
+  geom_rect(aes(xmin = min(xmin), xmax = max(xmax), ymin = (ymin * 1.05) , ymax = ymax * 0.95), 
+            fill = fill_intron, color = "black") + #draws intron box
+  geom_rect(aes(xmin = xmin_exon, xmax = xmax_exon, ymin = ymin_exon, ymax = ymax_exon), 
+            fill = fill, color = "black") + #draws exon box
+
+  
+  geom_segment(aes(x = min(xmin)-200, y = 1, xend = (min(xmin)- 100), yend = 1), 
+               arrow = arrow(type = "closed")) +
+  #draws arrowhead indicating stranscription start
+  geom_rect(aes(xmin = five_UTR$start, xmax = five_UTR$end, ymin = ymin_exon , ymax = ymax_exon), 
+            fill = "darkgoldenrod1", color = "black", linetype = "dashed") +
+  geom_rect(aes(xmin = three_UTR$start, xmax = three_UTR$end, ymin = ymin_exon , ymax = ymax_exon), 
+            fill = "darkgoldenrod1", color = "black", linetype = "dashed") +
+    geom_rect(aes(xmin = xmin_peak, xmax = xmax_peak, ymin = ymin, ymax = ymax), 
+            fill = fill_peak)  #draws peak
+
+gene_model
+```
+filter input and ip file for right coordinates
+```{r}
+input_df_gene <- input_df %>% filter(V1 == gene$seqnames) %>% filter(V2 > gene$start) %>% filter(V2 < gene$end)
+ip_df_gene <- ip_df %>% filter(V1 == gene$seqnames) %>% filter(V2 > gene$start) %>% filter(V2 < gene$end)
+```
+
+
+polygon plot count files
+```{r}
+counts_polygon <- ggplot() +
+  xlim(five_UTR$start - 200, three_UTR$end + 200) +
+  ggtitle(gene$gene_id) +
+  theme(axis.title.y = element_blank(),
+        #axis.ticks.y = element_blank(),
+        axis.text.y = element_text(size = 12, color = "black"),
+        axis.title.x.bottom = element_blank(),
+        axis.text.x.bottom = element_blank(),
+        #axis.ticks.x = element_blank(),
+        axis.line.y.left = element_line(),
+        axis.line.x.bottom = element_line(),
+        panel.background = element_blank(),
+        legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 16)) +
+  geom_area(aes(x = ip_df_gene$V2, y = ip_df_gene$V3), color = "darkorange", size = .9, fill = "orange", alpha = 0.5) +
+  geom_area(aes(x = input_df_gene$V2, y = input_df_gene$V3), color = "black", size = .9, fill = "lightgrey", alpha = 0.5) +
+  geom_vline(xintercept = xmin_peak, linetype = "dashed") +
+  geom_vline(xintercept = xmax_peak, linetype = "dashed") +
+  scale_y_continuous(labels = label_number(accuracy = 0.1)) +
+  
+  annotate(geom = "text", x = three_UTR$end-50 , y = max(input_df_gene$V3), label = "input counts", fontface = "bold", color = "black") +
+  annotate(geom = "text", x = three_UTR$end-50 , y = max(input_df_gene$V3)-2, label = "MeRIP counts", fontface = "bold", color = "darkorange")
+
+counts_polygon
+```
+
+Assemble plot
+```{r}
+p <- plot_grid(counts_polygon, gene_model, ncol = 1, rel_heights = c(1,.25))
+p
+```
+
+Export PDF
+```{r}
+pdf("IGV.pdf", width = 4, height = 2.5) 
+plot(p)
+dev.off()
+```
+
+
