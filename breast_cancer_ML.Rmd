@@ -1,0 +1,210 @@
+---
+title: "breast_cancer_ML"
+output: html_document
+---
+Loading data
+```{r}
+rm(list = ls())
+options(digits = 3)
+library(matrixStats)
+library(tidyverse)
+library(caret)
+library(dslabs)
+data(brca)
+```
+
+Exploring data
+```{r}
+#number of samples
+dim(brca$x)[1]
+
+#number of predictors
+dim(brca$x)[2]
+
+#proportion of malignant samples
+mean(brca$y == "M")
+
+#column with highest mean
+which.max(colMeans(brca$x))
+
+#column with lowest standard deviation
+which.min(colSds(brca$x))
+```
+Scaling matrix
+```{r}
+brca_mean_0 <- sweep(brca$x, 2, colMeans(brca$x)) #step1: subtracting mean to center matrix
+brca_standardized <- sweep(brca_mean_0, 2, colSds(brca$x), FUN = "/") #step2: dividing by st.dev. to scale
+
+#st.dev. of first column after scaling
+sd(brca_standardized[,1])
+
+#median of first column after scaling
+median(brca_standardized[,1])
+```
+Calculating sample distance
+```{r}
+#average distance between first sample and other benign samples
+d <- dist(brca_standardized)
+d_mat <- as.matrix(d)[1:569, 1:569]
+d_mat_ben <- d_mat[1,brca$y == "B"]
+mean(d_mat_ben)
+
+#average distance between first sample and malignant samples
+d_mat_mal <- d_mat[1,brca$y == "M"]
+mean(d_mat_mal)
+```
+Plotting features
+```{r}
+#hatmap of features
+d_feat <- dist(t(brca_standardized))
+heatmap(as.matrix(d_feat), labRow = NA, labCol = NA)
+```
+Performing hierarchical clustering
+```{r}
+#predictor clustering
+h <- hclust(d_feat)
+groups <- cutree(h, k = 5)
+split(names(groups), groups)
+```
+Performing PCA
+```{r}
+#proportion of variance explained by principal components
+pca <- prcomp(brca_standardized)
+summary(pca)
+```
+Plotting PCA
+```{r}
+data.frame(pca$x[,1:2], type = brca$y) %>%
+  ggplot(aes(PC1,PC2, color = type)) +
+  geom_point() +
+  ggtitle("PCA for different tumor types")
+```
+Exploring PCAs in boxplot
+```{r}
+library(reshape2)
+data.frame(pca$x[,1:10], type = brca$y) %>% 
+  melt() %>%
+  ggplot(aes(variable, value, color = type)) +
+  geom_boxplot() +
+  ggtitle("Boxplot of PCAs by tumor type - PCA1 describes difference in type well")
+
+```
+Application of ML to data
+Split data into training and test sets (80%/20%)
+```{r}
+set.seed(1, sample.kind = "Rounding")
+test_index <- createDataPartition(brca$y, times = 1, p = 0.2, list = FALSE)
+test_x <- brca_standardized[test_index,]
+test_y <- brca$y[test_index]
+train_x <- brca_standardized[-test_index,]
+train_y <- brca$y[-test_index]
+```
+
+Exploring training and test set
+```{r}
+#proportion of benign in training
+mean(train_y == "B")
+
+#proportion of benign in test
+mean(test_y == "B")
+```
+
+Performing k-means clustering
+```{r}
+predict_kmeans <- function(x, k) {
+    centers <- k$centers    # extract cluster centers
+    # calculate distance to cluster centers
+    distances <- sapply(1:nrow(x), function(i){
+                        apply(centers, 1, function(y) dist(rbind(x[i,], y)))
+                 })
+  max.col(-t(distances))  # select cluster with min distance to center
+}
+
+#accuracy with two centers
+set.seed(3, sample.kind = "Rounding")
+
+train_k <- kmeans(train_x, centers = 2)
+y_hat <- predict_kmeans(test_x, train_k)
+mean(y_hat == as.numeric(test_y))
+```
+
+Exploring classification
+```{r}
+#proportion of correctly identified benign tumors
+mean(y_hat[test_y == "B"] == as.numeric(test_y)[test_y == "B"])
+
+#proportion of correctly identified malignant tumors
+mean(y_hat[test_y == "M"] == as.numeric(test_y)[test_y == "M"])
+```
+Performing logistic regression
+```{r}
+set.seed(1, sample.kind = "Rounding")
+
+train_glm <- train(train_x, train_y, method = "glm")
+y_hat_glm <- predict(train_glm, test_x)
+confusionMatrix(y_hat_glm, test_y)
+```
+Modeling with LDA QDA
+```{r}
+set.seed(1, sample.kind = "Rounding")
+train_lda <- train(train_x, train_y, method = "lda")
+y_hat_lda <- predict(train_lda, test_x)
+confusionMatrix(y_hat_lda, test_y)
+
+set.seed(1, sample.kind = "Rounding")
+train_qda <- train(train_x, train_y, method = "qda")
+y_hat_qda <- predict(train_qda, test_x)
+confusionMatrix(y_hat_qda, test_y)
+```
+Modeling with Loess
+```{r}
+set.seed(5, sample.kind = "Rounding")
+train_loess <- train(train_x, train_y, method = "gamLoess")
+y_hat_loess <- predict(train_loess, test_x)
+confusionMatrix(y_hat_loess, test_y)
+```
+Modeling with KNN (with k optimization)
+```{r}
+set.seed(7, sample.kind = "Rounding")
+k = data.frame(k = seq(3,21,2))
+train_knn <- train(train_x, train_y, method = "knn", tuneGrid = k)
+
+plot(train_knn)
+k[which.max(train_knn$results$Accuracy),]
+
+y_hat_knn <- predict(train_knn, test_x)
+confusionMatrix(y_hat_knn, test_y)
+```
+Modeling with Random Forest (with mtry optimization)
+```{r}
+#optimization
+set.seed(9, sample.kind = "Rounding")
+mtry <- data.frame(mtry = c(3, 5, 7, 9))
+train_rf <- train(train_x, train_y, method = "rf", tuneGrid = mtry, importance = TRUE)
+plot(train_rf)
+
+y_hat_rf <- predict(train_rf, test_x)
+confusionMatrix(y_hat_rf, test_y)
+
+#assessing most important variable
+varImp(train_rf)
+
+
+
+```
+
+Using an ensemble to make majority prediction
+```{r}
+#accuracy of the ensemble model
+prediction_matrix <- cbind(y_hat, y_hat_glm, y_hat_lda, y_hat_qda, y_hat_loess, y_hat_knn, y_hat_rf)
+
+votes <- rowMeans(prediction_matrix == 1)
+y_hat_vote <- ifelse(votes > 0.5, 1, 0)
+ensemble_accuracy <- mean(y_hat_vote == as.numeric(test_y)-1)
+1 - ensemble_accuracy
+
+#which is the best model?
+accuracy <- colMeans(prediction_matrix == as.numeric(test_y))
+```
+
+
